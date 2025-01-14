@@ -1,116 +1,182 @@
-// Mock the firebase-admin module with complete credential structure
-jest.mock('firebase-admin', () => {
-    // Create mock functions that maintain chainability
-    const mockDoc = jest.fn();
-    const mockCollection = jest.fn(() => ({
-        doc: mockDoc
+// Mock firebase-admin
+jest.mock('../../src/utils/firebaseAdmin', () => {
+    const mockGet = jest.fn();
+    const mockSet = jest.fn();
+    const mockUpdate = jest.fn();
+    const mockDelete = jest.fn();
+
+    const mockDoc = jest.fn(() => ({
+        get: mockGet,
+        set: mockSet,
+        update: mockUpdate,
+        delete: mockDelete,
+        id: 'mock-id'
     }));
 
-    const mockFirestore = jest.fn(() => ({
-        collection: mockCollection
+    const mockCollection = jest.fn(() => ({
+        doc: mockDoc,
+        get: mockGet
     }));
 
     return {
-        initializeApp: jest.fn(),
-        credential: {
-            cert: jest.fn()
-        },
-        firestore: mockFirestore
+        firestore: jest.fn(() => ({
+            collection: mockCollection
+        }))
     };
 });
 
-// Mock the service account import
-jest.mock('../../firebase-service-account.json', () => ({
-    type: 'service_account',
-    project_id: 'mock-project',
-    private_key_id: 'mock-key-id'
-}));
-
-const admin = require('firebase-admin');
-
-// Import the service after mocking firebase-admin
-const { getConfigurations, updateConfigurations } = require('../../src/services/configService');
+const {
+    getConfigurations,
+    addConfiguration,
+    updateConfiguration,
+    deleteConfiguration
+} = require('../../src/services/configService');
 
 describe('Configuration Service', () => {
-    let mockDocRef;
+    let mockFirestore;
 
     beforeEach(() => {
         jest.clearAllMocks();
-
-        // Create a mock document reference with get and set methods
-        mockDocRef = {
-            get: jest.fn(),
-            set: jest.fn()
-        };
-
-        // Setup the document mock to return our mockDocRef
-        admin.firestore().collection().doc.mockReturnValue(mockDocRef);
+        mockFirestore = require('../../src/utils/firebaseAdmin').firestore();
     });
 
     describe('getConfigurations', () => {
-        it('should return configuration data when document exists', async () => {
-            const mockConfigData = {
-                setting1: 'value1',
-                setting2: 'value2',
-            };
+        it('should return all configurations when documents exist', async () => {
+            const mockDocs = [
+                {
+                    id: 'config1',
+                    data: () => ({ key: 'setting1', value: 'value1' })
+                },
+                {
+                    id: 'config2',
+                    data: () => ({ key: 'setting2', value: 'value2' })
+                }
+            ];
 
-            // Mock the get() response with proper document snapshot structure
-            mockDocRef.get.mockResolvedValueOnce({
-                exists: true,
-                data: () => mockConfigData,
+            mockFirestore.collection().get.mockResolvedValue({
+                empty: false,
+                docs: mockDocs
             });
 
             const result = await getConfigurations();
 
-            expect(result).toEqual(mockConfigData);
-            expect(admin.firestore().collection).toHaveBeenCalledWith('configurations');
-            expect(admin.firestore().collection().doc).toHaveBeenCalledWith('appConfig');
+            expect(result).toEqual([
+                { id: 'config1', key: 'setting1', value: 'value1' },
+                { id: 'config2', key: 'setting2', value: 'value2' }
+            ]);
+            expect(mockFirestore.collection).toHaveBeenCalledWith('configurations');
         });
 
-        it('should throw error when configuration document does not exist', async () => {
-            mockDocRef.get.mockResolvedValueOnce({
-                exists: false,
-                data: () => null,
-            });
+        it('should throw ConfigError when no configurations exist', async () => {
+            mockFirestore.collection().get.mockResolvedValue({ empty: true });
 
-            await expect(getConfigurations()).rejects.toThrow('Configuration not found');
-        });
-
-        it('should propagate firestore errors', async () => {
-            mockDocRef.get.mockRejectedValueOnce(new Error('Firestore error'));
-
-            await expect(getConfigurations()).rejects.toThrow('Firestore error');
+            // Or if you want to be more specific:
+            await expect(getConfigurations())
+                .rejects
+                .toThrow('Configuration not found');
         });
     });
 
-    describe('updateConfigurations', () => {
-        it('should successfully update configurations with valid parameters', async () => {
-            const mockParams = {
-                setting1: 'new value1',
-                setting2: 'new value2',
-            };
+    describe('addConfiguration', () => {
+        it('should add new configuration with valid data', async () => {
+            const newConfig = { key: 'newKey', value: 'newValue' };
 
-            mockDocRef.set.mockResolvedValueOnce();
+            const result = await addConfiguration(newConfig);
 
-            await updateConfigurations(mockParams);
-
-            expect(admin.firestore().collection).toHaveBeenCalledWith('configurations');
-            expect(admin.firestore().collection().doc).toHaveBeenCalledWith('appConfig');
-            expect(mockDocRef.set).toHaveBeenCalledWith(mockParams, { merge: true });
+            expect(result).toEqual({
+                id: 'mock-id',
+                ...newConfig
+            });
+            expect(mockFirestore.collection).toHaveBeenCalledWith('configurations');
         });
 
-        it('should throw error when parameters are null', async () => {
-            await expect(updateConfigurations(null)).rejects.toThrow('Invalid parameters');
+        it('should throw error when config is invalid', async () => {
+            const invalidConfigs = [
+                null,
+                {},
+                { key: 'only-key' },
+                { value: 'only-value' },
+                'not-an-object'
+            ];
+
+            for (const config of invalidConfigs) {
+                await expect(addConfiguration(config))
+                    .rejects
+                    .toThrow('Configuration must include a key and value');
+            }
+        });
+    });
+
+    describe('updateConfiguration', () => {
+        it('should update existing configuration', async () => {
+            const updates = { value: 'updatedValue' };
+
+            mockFirestore.collection().doc().get.mockResolvedValue({
+                exists: true
+            });
+
+            const result = await updateConfiguration('config1', updates);
+
+            expect(result).toEqual({
+                id: 'config1',
+                ...updates
+            });
+            expect(mockFirestore.collection).toHaveBeenCalledWith('configurations');
+            expect(mockFirestore.collection().doc).toHaveBeenCalledWith('config1');
         });
 
-        it('should throw error when parameters are not an object', async () => {
-            await expect(updateConfigurations('string')).rejects.toThrow('Invalid parameters');
+        it('should throw error when configuration does not exist', async () => {
+            mockFirestore.collection().doc().get.mockResolvedValue({
+                exists: false
+            });
+
+            await expect(updateConfiguration('non-existent', { value: 'test' }))
+                .rejects
+                .toThrow('Configuration not found');
         });
 
-        it('should propagate firestore errors during update', async () => {
-            mockDocRef.set.mockRejectedValueOnce(new Error('Firestore update error'));
+        it('should throw error with invalid parameters', async () => {
+            const invalidCases = [
+                [null, { value: 'test' }],
+                ['id', null],
+                ['id', 'not-an-object']
+            ];
 
-            await expect(updateConfigurations({ test: 'value' })).rejects.toThrow('Firestore update error');
+            for (const [id, updates] of invalidCases) {
+                await expect(updateConfiguration(id, updates))
+                    .rejects
+                    .toThrow('Invalid update parameters');
+            }
+        });
+    });
+
+    describe('deleteConfiguration', () => {
+        it('should delete existing configuration', async () => {
+            mockFirestore.collection().doc().get.mockResolvedValue({
+                exists: true
+            });
+
+            const result = await deleteConfiguration('config1');
+
+            expect(result).toEqual({ id: 'config1' });
+            expect(mockFirestore.collection).toHaveBeenCalledWith('configurations');
+            expect(mockFirestore.collection().doc).toHaveBeenCalledWith('config1');
+        });
+
+        it('should throw error when configuration does not exist', async () => {
+            mockFirestore.collection().doc().get.mockResolvedValue({
+                exists: false
+            });
+
+            await expect(deleteConfiguration('non-existent'))
+                .rejects
+                .toThrow('Configuration not found');
+        });
+
+        it('should throw error with invalid id', async () => {
+            await expect(deleteConfiguration(null))
+                .rejects
+                .toThrow('Invalid ID');
         });
     });
 });
