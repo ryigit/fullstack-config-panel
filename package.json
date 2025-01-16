@@ -1,0 +1,15 @@
+{
+  "name": "configuration-manager",
+  "version": "1.0.0",
+  "description": "Root package for managing the frontend and backend of the Configuration Manager project",
+  "main": "index.js",
+  "scripts": {
+    "start": "concurrently \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\""
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "concurrently": "^7.6.0"
+  },
+  "author": "Your Name",
+  "license": "MIT"
+}
